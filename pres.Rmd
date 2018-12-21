@@ -1,0 +1,657 @@
+---
+title: "Modelowanie szeregów czasowych"
+author: "Grzegorz Pietrusza"
+output:
+  beamer_presentation: default
+  ioslides_presentation: default
+font-family: Arial
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+generate_series <- function(phi=c(), theta=c(), sd, size) {
+    #each point represented by c(deteministic, random)
+    ar_order = length(phi)
+    ma_order = length(theta)
+    initial_points = max(ar_order, ma_order)
+    values = matrix(0, nrow = size + initial_points + 1, ncol = 2)
+    values[initial_points + 1, 1] = rnorm(1, 0, sd)
+    #todo: rethink
+    for (i in (initial_points + 2) : (size + initial_points + 1)) {
+        ar_input = rowSums(values[(i - ar_order) : (i - 1),])
+        ma_input = values[(i - ma_order) : (i - 1), 2]
+        ar_components = ar_input * rev(phi)
+        ma_components = ma_input * rev(theta)
+        #todo: apply diffinv at the end
+        values[i, 1] = sum(ar_components) + sum(ma_components)
+        values[i, 2] = rnorm(1, 0, sd)
+    }
+    return(matrix(tail(values, size), ncol = 2))
+}
+
+draw_series <- function(series, limit = length(series), mark_totals = 0, mark_deterministic = 0, draw_noise_range = TRUE, draw_all=TRUE) {
+    last_point = ts(c(series[limit, 1]), start=limit)
+    series = head(series, limit-1)
+    deterministic_series = ts(series[, 1])
+    total_series = ts(rowSums(series))
+    
+    y_min = min(total_series, last_point-sd)
+    y_max = max(total_series, last_point+sd)
+    
+    
+    if (draw_all) {
+      ts.plot(deterministic_series, total_series, last_point, gpars = list(
+        type="b", col = c("blue", "red", "darkgreen")))
+    } else {
+      ts.plot(total_series, last_point, gpars = list(
+        type="b", col = c("red", "darkgreen")))
+    }
+    
+    if (draw_all) {
+      for (i in 1:(dim(series)[1])) {
+          x = c(i, i)
+          y = c(series[i,1], sum(series[i,]))
+          if (i >= limit-mark_deterministic) {
+            lines(x,y, lty=1, lwd=5, col="brown")
+          } else {
+            lines(x,y, lty=3)  
+          }
+          
+      }
+    }
+    if (mark_totals > 0) {
+      points_x = (limit-1):(limit-mark_totals)
+      points_y = total_series[points_x]
+      points(points_x, points_y, pch=19, col="red")
+    }
+
+    points(last_point, pch=19, col="darkgreen")
+    if (draw_noise_range) {
+      x0 = start(last_point)[1]
+      y0 = last_point[1]
+      lower_noise_range = y0-1
+      upper_noise_range = y0+1
+      
+      max_probability = 1/sqrt(2*pi*sd^2)*exp(-((y0)^2)/(2*sd^2))
+      for (y in seq(from=lower_noise_range,by=0.08,to=upper_noise_range)) {
+        probability = 1/sqrt(2*pi*sd^2)*exp(-((y-y0)^2)/(2*sd^2))
+        points(c(x0), c(y), col=rgb(0, 0, 0, probability))  
+      }
+    }
+
+    if (draw_all) {
+      legend("bottomleft", legend=c(
+        expression('X'[t]), 
+        expression('X'[t]*'-Z'[t])),
+        col=c("red", "blue"), lty=1, cex=1.2)
+    }
+}
+
+library(devtools)
+source_url('https://gist.githubusercontent.com/fawda123/7471137/raw/466c1474d0a505ff044412703516c34f1a4684a5/nnet_plot_update.r')
+```
+
+## Pliki
+https://github.com/jifwin/time_series_lecture
+
+## Szereg czasowy
+zbiór obserwacji uporządkowanych w czasie
+```{r timeseries}
+length = 250
+limit = 10
+phis = c(1.1, -0.7, 0.5)
+thetas = c()
+sd = 0.5
+series = ts(rowSums(generate_series(phis, thetas, sd, length)))
+par(mfrow=c(2,1))
+par(mar = c(2, 2, 0, 0));
+plot(series)
+plot(AirPassengers)
+par(mfrow=c(1,1))
+#todo: another example with air passengers
+```
+
+## Analiza szeregów czasowych
+* Poszukiwanie zależności
+    + składowe deterministyczne
+    + składowe okresowe
+    + losowość
+* Predykcja
+* Detekcja anomalii
+
+
+## Modele ARIMA
+```{r arima1, fig.fullwidth=TRUE, fig.height=3}
+x0 = 5
+y0 = 10
+z = 5
+point = ts(c(y0),(x0))
+sd = 5
+par(mar = c(2, 2, 0, 0));
+plot(point, type="b", ylab="valu", pch=19, col="green", ylim=c(0, 20))
+for (y in seq(from=0,by=0.25,to=20)) {
+  probability = 1/sqrt(2*pi*sd^2)*exp(-((y-y0)^2)/(2*sd^2))
+  points(c(x0), c(y), col=rgb(0, 0, 0, probability*5))  
+}
+points(c(x0), c(y0+z), col="red", pch=19)
+lines(c(x0+0.2, x0+0.2), c(y0, y0+z), lty=1, lwd=5, col="brown")
+text(x0+0.3, (y0+y0+z)/2, expression('Z'[t]))
+```
+$$X_t=f(X_1,...,X_{n-a})+\color{brown}{Z_t}$$
+
+## Model autoregresji - AR(p)
+```{r autoregression, fig.fullwidth=TRUE, fig.height=3}
+length = 25
+limit = 10
+phis = c(1.1, -0.7, 0.5)
+thetas = c()
+sd = 0.5
+series = generate_series(phis, thetas, sd, length)
+par(mar = c(2, 2, 0, 0));
+draw_series(series, limit, mark_totals=length(phis), draw_all=FALSE)
+```
+$$X_{`r limit`}=\phi_1 \color{red}{X_{`r limit-1`}}+\phi_2 \color{red}{X_{`r limit-2`}}+\phi_3 \color{red}{X_{`r limit-3`}}+Z_{`r limit`}=\\=`r phis[1]` \color{red}{X_{`r limit-1`}}+`r phis[2]` \color{red}{X_{`r limit-2`}}+`r phis[3]` \color{red}{X_{`r limit-3`}}+Z_{`r limit`}=\color{darkgreen}{`r series[limit,1]`}+Z_{`r limit`}$$
+
+## Model ruchomej średniej - MA(q)
+```{r movingaverage, fig.fullwidth=TRUE, fig.height=3}
+length = 25
+limit = 10
+phis = c()
+thetas = c(-1.5, 0.4, -0.2)
+sd = 0.5
+series = generate_series(phis, thetas, sd, length)
+par(mar = c(2, 2, 0, 0));
+draw_series(series, limit, mark_deterministic=length(thetas))
+```
+$$X_{`r limit`}=\theta_1 \color{red}{Z_{`r limit-1`}}+\theta_2 \color{red}{Z_{`r limit-2`}}+\theta_3 \color{red}{Z_{`r limit-3`}}+Z_{`r limit`}=\\=`r thetas[1]` \color{red}{Z_{`r limit-1`}}+`r thetas[2]` \color{red}{Z_{`r limit-2`}}+`r thetas[3]` \color{red}{Z_{`r limit-3`}}+Z_{`r limit`}=\\=\color{darkgreen}{`r series[limit,1]`}+Z_{`r limit`}$$
+
+## Model autoregresji ruchomej średniej - ARMA(p,q)
+$$X_t=\\
+\color{red}{\theta_1 Z_{t-1}+\theta_2 Z_{t-2}+...+\theta_q Z_{t-q}}+\\
++\color{green}{\phi_1 X_{t-1} + \phi_2 X_{t-2}+...+\phi_p X_{t-p}}+\\
++\color{blue}{Z_t}$$
+
+np. $$\color{green}{AR(p = 2)} + \color{red}{MA(q=1)}$$
+$$X_t=\color{red}{\theta_1 Z_{t-1}}+\color{green}{\phi_1 X_{t-1} + \phi_2 X_{t-2}}+\color{blue}{Z_t}$$
+
+## Stacjonarność
+* stała wariancja szumu
+* brak trendów długoterminowych lub okresowych
+```{r stationary_series}
+length = 250
+phis = c()
+thetas = c(-1.5, 0.4, -0.2)
+sd = 0.5
+stationary_series = ts(rowSums(generate_series(phis, thetas, sd, length)))
+non_stationary_series = diffinv(stationary_series, differences = 1)
+par(mfrow=c(2,1))
+par(mar = c(0, 2, 2, 0));
+plot(non_stationary_series, main="Szereg niestacjonarny", xaxt='n')
+plot(stationary_series, main="Szereg stacjonarny", xaxt='n')
+```
+
+
+## Różnicowanie
+* Przekształca szereg niestacjonarny w stacjonarny
+* Usuwa trendy (liniowe, wielomianowe, sezonowe)
+
+$$\triangledown X_t=X_t-X_{t-1}$$
+```{r stationary_series2, fig.height=3}
+length = 250
+phis = c()
+thetas = c(-1.5, 0.4, -0.2)
+sd = 0.5
+par(mfrow=c(1,2))
+par(mar = c(2, 2, 2, 2));
+plot(non_stationary_series, main="Szereg niestacjonarny")
+plot(stationary_series, main="Szereg stacjonarny")
+```
+
+## ARIMA (p,d,q)
+* AR(p) + MA(q) + diff(d) = ARIMA(p,d,q)
+* różnicowanie szeregu, a następnie dopasowanie modelu ARMA(p,q)
+* pozwala na modelowanie szeregów niestacjonarnych
+* rząd różnicowania rzadko większy niż 1
+
+## Przykład modelu ARMA
+```{r arma_example}
+library(forecast)
+length = 2000
+limit = 10
+phis = c(1.1, -0.7, 0.5)
+thetas = c(0.5, -0.4)
+sd = 0.5
+series = ts(rowSums(generate_series(phis, thetas, sd, length)))
+
+```
+```{r, echo=TRUE}
+model = auto.arima(series, max.p = 5, max.q = 5, stationary = TRUE)
+model = Arima(series, order=c(3,0,2))
+plot(series)
+```
+```{r}
+plot(series)
+```
+
+## Jakość dopasowania 1
+```{r, echo=TRUE}
+model$coef
+model$sigma2
+model$aicc
+model$bic
+```
+
+## Jakość dopasowania 2
+```{r, echo=TRUE, fig.fullwidth=TRUE}
+plot(model$residuals)
+hist(model$residuals, breaks=25)
+```
+
+## Jakość dopasowania 3
+```{r, echo=TRUE, fig.fullwidth=TRUE}
+hist(model$residuals, breaks=25)
+```
+
+## Wybór rzędów modelu - p, d, q
+* przed modelowaniem:
+    + pewne wskazówki na podstawie funkcji ACF i PACF
+  
+```{r}
+par(mfrow=c(2,1), mar=c(1,1,1,1))
+acf(series, 100)
+pacf(series, 100)
+```
+
+## Wybór rzędów modelu - p, d, q
+* po modelowaniu:
+    + kryteria AIC, AICC, BICC
+    + rozkład reszt
+    + analiza dokładności prognoz
+    + analiza istotności współczynników modelu
+
+## Zadanie 
+```{r}
+#p-value explained
+#https://stats.stackexchange.com/questions/64711/ljung-box-statistics-for-arima-residuals-in-r-confusing-test-results
+```
+* napisać kod który dobierze wszystkie możliwe modele do szeregu w zakresie
+    + 0 <= p <= p_max
+    + 0 <= d <= 1
+    + 0 <= q <= q_max
+* oraz porówna te modele pod kątem AIC, AICC, BIC
+* oraz zbada autokorelację reszt (test Box-Pierca, p-value)
+* porównać wynik z modelem z auto.arima
+
+## Modele sezonowe
+```{r seasonal_on_arima}
+library(forecast)
+par(mfrow=c(2,1), mar=c(0,0,0,0))
+non_seasonal_model = auto.arima(AirPassengers, seasonal=FALSE)
+seasonal_model = auto.arima(AirPassengers)
+plot(forecast(non_seasonal_model), ylab=NULL, xlab=NULL, xaxt='n', ann=FALSE)
+plot(forecast(seasonal_model), ylab=NULL, xlab=NULL, xaxt='n', ann=FALSE)
+```
+
+
+## Seasonal ARIMA
+```{r seasonal_series_base}
+
+period = 12
+length = period*10-2
+limit = 10
+phis = c(0.2, -0.1)
+thetas = c(0.3)
+sd = 1
+
+non_seasonal_series = ts(rowSums(generate_series(phis, thetas, sd, length)))
+seasonal_part = ts((seq(from=1,by=1,to=length) %% period) + ((seq(from=4,by=1,to=length+3) %% period))*0.3)
+seasonal_series = non_seasonal_series + seasonal_part
+plot(seasonal_series)
+for (i in seq(from=71,by=12,to=107)) {
+  points(i, seasonal_series[i], pch=19, col="darkgreen")
+  abline(v=i)
+}
+
+for (i in seq(from=115, by=1, to=118)) {
+  points(i, seasonal_series[i], pch=19, col="red")
+}
+```
+$$X_t = \color{red}{ARIMA(p,d,q)} + f(\color{darkgreen}{X_{t-s},X_{t-2s},X_{t-3s},X_{t-4s}})$$
+
+## SARIMA(p,d,q)(P,D,Q)[s]
+np. SARIMA(1,0,2)(2,0,1)[12]
+$$X_t = \\\phi_1X_{t-1}+\theta_1Z_{t-1}+\theta_2Z_{t-2}+\\+\Phi_1X_{t-s}+\Phi_2X_{t-2s}+\Theta_1Z_{t-s}\\+Z_t$$ 
+
+## Okresowość
+```{r seasonal_series, fig.fullwidth=TRUE}
+par(mar = c(2, 2, 0, 0));
+plot(seasonal_series)
+```
+
+## ACF
+```{r seasonal_series_acf, fig.fullwidth=TRUE}
+acf(seasonal_series, 12*6, title=NULL)
+```
+
+## Okresowość - Dekompozycja
+ARIMA(3,0,0) + diff(lag=12) = SARIMA(3,0,0)(0,1,0)[12]
+```{r seasonal_series2}
+par(mfrow=c(3,1), mar=c(0,0,0,0))
+#ylim = c(min(seasonal_series), max(seasonal_series))
+removed_seasonality_series = diff(seasonal_series, lag=period)
+plot(seasonal_series, ylab=NULL, xlab=NULL, xaxt='n', ann=FALSE)
+plot(seasonal_series-removed_seasonality_series, ylab=NULL, xlab=NULL, xaxt='n', ann=FALSE)
+plot(removed_seasonality_series, ylab=NULL, xlab=NULL, xaxt='n', ann=FALSE)
+par(mfrow=c(1,1))
+model = Arima(seasonal_series, order=c(3,0,0), seasonal = list(order = c(0,1,0), period = period))
+```
+
+
+## Okresowość - prognoza z dekompozycji
+```{r seasonal_series3}
+plot(forecast(model, 50))
+```
+
+## Okresowość - SARIMA
+```{r seasonal_series_v2}
+options(warn=-1)
+seasonal_time_series = diff(ts(scan("http://robjhyndman.com/tsdldata/data/nybirths.dat"), freq=12))
+par(mfrow=c(2,1), mar=c(2,6,0,0))
+plot(seasonal_time_series, ylab=NULL, xlab=NULL, xaxt='n', ann=FALSE, title=NULL)
+acf(data.frame(seasonal_time_series), length(seasonal_time_series)/3)
+par(mfrow=c(1,1))
+options(warn=0)
+```
+
+## auto.arima
+```{r seasonal_series_prediction, echo=TRUE}
+model1 = auto.arima(seasonal_time_series, seasonal=TRUE)
+model2 = Arima(seasonal_time_series, order=c(3,0,0),
+               seasonal=list(order=c(2,1,2), period=12))
+```
+```{r}
+model = model1
+```
+```{r,echo=TRUE}
+model$coef
+model$sigma2
+```
+
+## Predykcja
+```{r, echo=TRUE}
+forecast_length = period
+include_previous_length = period*5
+forecasted = forecast(model, forecast_length)
+plot(forecasted, include_previous_length)
+```
+
+## Problemy modeli SARIMA
+* okresowość > 24
+    + np. próbkowanie 1min, okres 24h
+    + dla okresu S wewnętrznie dopasowanie S parametrów
+    + bardzo duże wymagania pamięciow (macierz kowariancji)
+* nie obsluguje wielokrotnej sezonowosci (np. 24h i 7d)
+
+## Szeregi Fouriera
+* modelowanie korelacji okresowej za pomocą szeregów fouriera zamiast okresowego AR i MA
+```{r fourier_drawing, fig.fullwidth=TRUE}
+library(jpeg)
+jj = readJPEG("/home/grzegorz/FourierSeriesSquareWave_800.jpeg")
+par(mar=c(0,0,0,0))
+plot(0:1,0:1,type="n",ann=FALSE,axes=FALSE)
+rasterImage(jj,0,0,1,1)
+```
+
+## Szereg o długiej okresowości (288 próbek)
+```{r long_seasonality_series}
+period = 12*24
+sampling = 10
+sd = 0.5
+x = seq(from=1, by=0.1, to=period*sampling)
+phis = c(0.9, -0.2)
+thetas = c(0.2)
+sin_series = 0.4*sin(2*pi/period*x)
+arima_series = rowSums(generate_series(phis, thetas, sd, length(x)))
+y = ts(arima_series + sin_series, f=period*sampling)
+plot(y)
+```
+
+## Dekompozycja
+```{r long_seasonality_decomposed}
+par(mfrow=c(2,1), mar=c(2,2,0,0))
+plot(y, lwd=0.1)
+lines(ts(sin_series, freq=period*10), lwd=3)
+plot(y-sin_series)
+par(mfrow=c(1,1))
+```
+
+
+## Model ARIMA + Fourier
+```{r, echo=TRUE}
+#period = 288 #sampling = 10 #y = ts(..., f=period*sampling)
+model = Arima(y, order=c(2,0,1), xreg=fourier(y,K=1))
+model$coef
+```
+
+```{r, fig.height=3}
+hist(model$residuals, breaks=50)
+```
+ 
+## Prognozowanie 1
+```{r}
+plot_long_seasonality_forecast = function(offset) {
+  train_set = ts(y[1:offset], f=period*10)
+  test_set = ts(y[1:(offset+5)], f=period*10)
+  model = Arima(train_set, order=c(3,0,1), xreg=fourier(train_set,K=1))
+  plot(forecast(model, h=5, xreg=fourier(y, K=1, h=5)), 50)
+  points(test_set)
+}
+plot_long_seasonality_forecast(25000)
+```
+
+## Prognozowanie 2
+```{r}
+plot_long_seasonality_forecast(25100)
+```
+
+## Prognozowanie 3
+```{r}
+plot_long_seasonality_forecast(25200)
+```
+
+## Prognozowanie 4
+```{r}
+plot_long_seasonality_forecast(25300)
+```
+
+## Prognozowanie 5
+```{r}
+plot_long_seasonality_forecast(25400)
+```
+
+## Szereg wielookresowy
+* przeanalizować okresowość
+* dobraćm odel wielookresowy z wykorzystaniem szeregów Fouriera
+* ex2.R
+
+```{r mutli_seasonal}
+y = readRDS("/home/grzegorz/arima/seasonal_time_series.rds")
+plot(ts(y))
+```
+
+## Wady i zalety modelu ARIMA + Fourier
+* pozwala na zamodelowanie długiej okresowości (>24) 
+* pozwala na modelowanie wielokrotnej okresowości
+* znacznie skrócony czas dobierania modelu
+* xreg może być dowolną funkcją, np. prostokątną
+
+* bardzo wrażliwy na zmiany okresowości
+* wymaga określenia okresów
+* wymaga określenia liczby harmonicznych dla każdego okresu
+* podatny na efekt Gibbsa
+
+## Sieci neuronowe w modelowaniu szeregów czasowych
+* coraz bardziej popularne w prognozowaniu szeregów czasowych
+* tworzą nieliniową sieć zależności pomiędzy zmiennymi wejściowymi i wyjściem
+* nie są organiczone warunkami stacjonarności
+* nie uwzględniają szumu
+```{r}
+library(neuralnet)
+
+freq1 = 300
+freq2 = 120
+prepare_set = function(series, length, offset) {
+  D1 = array(0, c(length,1))
+  D2 = array(0, c(length,1))
+  D3 = array(0, c(length,1))
+  D4 = array(0, c(length,1))
+  D5 = array(0, c(length,1))
+  
+  DS1_1 = array(0, c(length,1))
+  DS1_2 = array(0, c(length,1))
+  DS1_3 = array(0, c(length,1))
+  
+  DS2_1 = array(0, c(length,1))
+  DS2_2 = array(0, c(length,1))
+  DS2_3 = array(0, c(length,1))
+  
+  Y = array(0, c(length,1))
+  
+  for (i in 1:length) {
+    pos = i+offset
+    D1[i] = y[pos-1]
+    D2[i] = y[pos-2]
+    D3[i] = y[pos-3]
+    D4[i] = y[pos-4]
+    D5[i] = y[pos-5]
+    DS1_1[i] = y[pos-freq1*1]
+    DS1_2[i] = y[pos-freq1*2]
+    DS1_3[i] = y[pos-freq1*3]
+    DS2_1[i] = y[pos-freq2*1]
+    DS2_2[i] = y[pos-freq2*2]
+    DS2_3[i] = y[pos-freq2*3]
+    Y[i] = y[pos]
+  }
+  
+  return(data.frame(D1, D2, D3, D4, D5, DS1_1, DS1_2, DS1_3, DS2_1, DS2_2, DS2_3, Y))
+}
+
+```
+```{r echo=TRUE}
+f = as.formula('Y~D1+D2+D3+D4+D5+DS1_1+DS1_2+DS1_3+DS2_1+DS2_2+DS2_3')
+```
+
+```{r}
+train_length = 2000
+test_length = 100
+
+train_set = prepare_set(y, train_length, offset=3*freq1+1)
+test_set = prepare_set(y, test_length, offset=3*freq1+1)
+expectedY = ts(test_set$Y, start=2)
+test_set$Y = NULL
+```
+
+```{r echo=TRUE}
+nn = neuralnet(f,data=train_set,hidden=c(11))
+```
+
+## Feed-forward neural network
+```{r, message=FALSE, fig.fullwidth=TRUE}
+library(nnet)
+library(neuralnet)
+nn = neuralnet(f,data=train_set,hidden=c(11))
+y_ts = ts(window(y, length(y)-1000))
+par(mfrow=c(1,2), mar=c(0,0,0,0))
+plot(y_ts)
+x_points = c(1000, 999, 998, 997, 996, 995, 1000-freq1, 1000-freq1*2, 1000-freq1*3, 1000-freq2, 1000-freq2*2, 1000-freq2*3)
+y_points = y_ts[x_points]
+points(x_points, y_points, pch=19, col="red")
+plot.nnet(nn)
+par(mfrow=c(1,1))
+```
+
+## Sieci neuronowe - prognozowanie
+```{r}
+forecast = compute(nn, test_set)
+result = ts(forecast$net.result)
+plot(result)
+lines(expectedY, col="blue")
+```
+
+## Sieci neuronowe - przedziały ufności
+* resampling szumu z zbioru treningowego
+* symulacja przebiegu szeregu
+```{r, fig.fullwidth=TRUE}
+library(png)
+jj = readPNG("/home/grzegorz/arima/unnamed-chunk-2-1.png")
+par(mfrow=c(1,1), mar=c(0,0,0,0))
+plot(0:1,0:1,type="n",ann=FALSE,axes=FALSE)
+rasterImage(jj,0,0,1,1)
+text(0,0,pos=4,"https://robjhyndman.com/hyndsight/nnetar-prediction-intervals/")
+```
+
+## Sieci neuronowe - przedziały ufności
+```{r, fig.fullwidth=TRUE}
+library(png)
+jj = readPNG("/home/grzegorz/arima/unnamed-chunk-3-1.png")
+par(mfrow=c(1,1), mar=c(0,0,0,0))
+plot(0:1,0:1,type="n",ann=FALSE,axes=FALSE)
+rasterImage(jj,0,0,1,1)
+text(0,0,pos=4,"https://robjhyndman.com/hyndsight/nnetar-prediction-intervals/")
+```
+
+## Detekcja anomalii
+```{r, fig.fullwidth=TRUE}
+par(mfrow=c(1,1), mar=c(2,2,2,2))
+series = readRDS("/home/grzegorz/arima/regular.rds")
+model = auto.arima(series)
+plot(forecast(model, level=c(50,60,70,80,85,90,95.98,99), 1), 10)
+x_point = 2001
+y1_point = 0.3
+y2_point = 1
+y3_point = 1.5
+y4_point = 2.2
+points(x_point, y1_point, pch=19, col="darkgreen")
+points(x_point, y2_point, pch=19, col="darkgreen")
+points(x_point, y3_point, pch=19, col="orange")
+points(x_point, y4_point, pch=19, col="red")
+```
+
+## Detekcja anomalii
+```{r, fig.fullwidth=TRUE}
+library(png)
+jj = readPNG("/home/grzegorz/arima/anomaly.png")
+par(mfrow=c(1,1), mar=c(0,0,0,0))
+plot(0:1,0:1,type="n",ann=FALSE,axes=FALSE)
+rasterImage(jj,0,0,1,1)
+```
+
+## Podsumowanie
+* klasyczna ARIMA
+    + prosta i intuicyjna
+    + nie wspiera długich okresów
+    + nie wspiera wielookresowości
+    + nadaje się do modelowania danych tygodniowych, miesięcznych, rocznych...
+    + wymaga określenia rzędu modelu
+* ARIMA + Fourier
+    + rozwiązuje problem okresowości
+    + szybszy niż SARIMA
+    + wymaga określenia liczby harmoczniych
+
+## Podsumowanie
+* sieci neuronowe
+    + brak podziału na próbki zwykłe i okresowe
+    + wszystkie zmienne traktowane są tak samo
+    + wymaga określenia liczby neuronów
+    + długi czas uczenia
+    + nie zakładają rozkładu normalnego szumu na etapie modelowania
+
+## Podsumowanie
+* modele maja rożne ograniczenia
+* automatyczny wybór rzędów i parametrów modelu nie jest prosty
+* przed wyborem modelu konieczna jest analiza własności szeregu
+* dodatkowe utrudnienia w prognozowaniu:
+    + wybór zbioru treningowego
+    + lata przestępne
+    + święta ruchome
+* najpewniejszą metodą jest wybór wielu modeli i ich ocena za pomocą wybranych kryteriów
